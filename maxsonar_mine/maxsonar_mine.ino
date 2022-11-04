@@ -1,5 +1,5 @@
 /*
-not gonna use serial
+not gonna use serial, use pulse since analog is only in .5s increments? and seems more reliable
 */
 
 #include <SoftwareSerial.h>
@@ -38,6 +38,9 @@ not gonna use serial
 SoftwareSerial mseSerial(MSE_SDATA_PIN, 3, true); // RX,TX,inverse_logic (TX is not used)
 int _loopCount = 0; // Used to track the times through loop
 int _voltage_scale;
+double prevMeasurement;
+double displacementArr[58]; //58 since measurements taken ever 51ms, and aroudn 58 of these in 3 sec
+
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(38400); // Open serial communications
@@ -51,27 +54,36 @@ void setup() {
   pinMode(MSE_AN_PIN, INPUT);
   digitalWrite(MSE_READ_MODE_PIN, MSE_READ_IDLE); // Use 'triggered' mode
   pinMode(MSE_READ_MODE_PIN, OUTPUT);
+//  startMillis = millis();
 //  _voltage_scale = VCC / 1024; //0.009766V per inch
 }
 
 void loop() {
-//  int rawValue = analogRead(MSE_AN_PIN); //is a voltage reading
-//  int distance = rawValue / _voltage_scale;
 // Trigger a measurement and read the distance using the pulse-width method
   // then the serial and analog methods
+  unsigned long startMillis = millis();
   double pwDistance = triggerAndReadDistanceFromPulse();
-//  int serialDistance = readDistanceFromSerial(); // should be reading from rx
-  double analogDistance = readDistanceFromAnalog();
   if (_loopCount++ % 20 == 0) {
-//    Serial.println("Pulse:\tSerial:\tAnalog:\t");
     Serial.println("Pulse:\tAnalog:\t"); 
   }
   Serial.print(pwDistance);
   Serial.print("\t");
-//  Serial.print(serialDistance);
-//  Serial.print("\t");
   Serial.print(analogDistance);
   Serial.println("\t");
+
+  if(prevMeasurement == NULL){
+    prevMeasurement = pwDistance;
+  }
+//  unsigned long endMill = millis();
+
+  double diff = pwDistance - prevMeasurement;
+  double diffTime = endMill - startMillis;
+  Serial.print(diff);
+  Serial.print("\t");
+  Serial.println(diffTime);
+  Serial.println(" ");
+  prevMeasurement = pwDistance;
+//  startMillis = endMill;
 //  **PRINT SOMETHING** 
   delay(250 - MSE_READ_REQUIRED_DURATION_mS);
 }
@@ -104,7 +116,6 @@ double triggerAndReadDistanceFromPulse() {
   delayMicroseconds(10);
   unsigned long pulseWidth = pulseIn(MSE_PW_PIN, HIGH, (MSE_PW_START_DELAY_MSE_uS + (MSE_READ_REQUIRED_DURATION_mS * 1000L)));
   double distance = (double)(pulseWidth / MSE_PW_uS_PER_INCH);
-//  double distance = (double)(pulseWidth / MSE_PW_uS_PER_CM);
   digitalWrite(MSE_READ_MODE_PIN, MSE_READ_IDLE);
  
   // Wait for the minimum time to pass (first check for overflow)
@@ -116,79 +127,3 @@ double triggerAndReadDistanceFromPulse() {
   } 
   return distance;
 }
-
-/**
- * Read the MaxSonar analog distance value.
- *
- * MaxSonar value is 0-255 while Arduino value is 0-1023 so the
- * value read needs to be divided.
- *
- * triggerAndReadDistanceFromPulse() must be called before this
- * to get an updated distance measurement.
- *
- * Return: distance in inches
- */
-double readDistanceFromAnalog() {
-  double rawValue = analogRead(MSE_AN_PIN);
-  double distance = rawValue / MSE_ANALOG_DIVISOR;
-
-  return distance;
-}
-
-/**
- * Read the MaxSonar serial distance value.
- * If a value can't be read 0 is returned.
- *
- * triggerAndReadDistanceFromPulse() must be called before this
- * to get an updated distance measurement.
- *
- * Return: distance in inches
- */
-//int readDistanceFromSerial() {
-//  int distance = 0;
-//  char text[6];
-//  text[0] = '\0';
-//  
-//  // Wait for a character to become available (or the maximum time for a measurement)
-//  int timeout = MSE_READ_REQUIRED_DURATION_mS;
-//  for (timeout; timeout > 0 && mseSerial.available() < 5; timeout--) {
-//    delay(1);
-//  }
-//  if (timeout > 0) { // didn't time out
-//    // Build up the string looking for a carriage-return ('\r') or a maximum of
-//    // 5 characters. MaxSonar format is "Rxxx\r".
-//    // 
-//    // Wait up to the maximum MaxSonar measurement time to receive 5 characters...
-//    for(long start=millis(); mseSerial.available() < 5 && millis()-start < MSE_READ_REQUIRED_DURATION_mS; ) {
-//      delay(1); // short delay so we don't slam cpu
-//    }
-//
-//    int i = 0;
-//    if (mseSerial.available() >= 5) {
-//      for(i; i<5; i++) {
-//        char c = (char)mseSerial.read();
-//        text[i] = (c != '\r' ? c : '\0'); // terminate with null when RETURN is received
-//      }
-//      text[i] = '\0'; // Add null terminator
-//    }
-//    // Convert the string to an integer value
-//    distance = atoi(&text[1]);
-//  }
-//  return distance;
-//}
-
-
-//void loop() {
-//  int rawValue = analogRead(MSE_AN_PIN); //is a voltage reading
-//  int distance = rawValue / _voltage_scale;
-//    Serial.print("Voltage reading: ");
-//    Serial.print(rawValue);
-//    Serial.print("Distance: ");
-//    Serial.print(distance);
-//    Serial.println(" in");
-////  int analogDistance = readDistanceFromAnalog();
-//  // put your main code here, to run repeatedly:
-//  //  Serial.print("Distance: ");
-//  //  Serial.print(distance);
-//  //  Serial.println(" cm");
-//}
