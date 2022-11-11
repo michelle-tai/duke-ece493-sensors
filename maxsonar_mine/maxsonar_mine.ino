@@ -8,6 +8,10 @@
 //  GPIO Pins (analog)
 #define MSE_AN_PIN A0 //analog
 
+// mosfet pin
+#define MOSFET_GATE_PIN1 12
+#define MOSFET_GATE_PIN2 11
+
 // MaxSonar to Arduino control/adjustments
 #define MSE_READ_CONTINUOUS HIGH 
 //low read idle is trigger, high is continuous
@@ -51,10 +55,21 @@ void setup() {
   pinMode(MSE_AN_PIN, INPUT);
   digitalWrite(MSE_READ_MODE_PIN, MSE_READ_IDLE); // Use 'triggered' mode
   pinMode(MSE_READ_MODE_PIN, OUTPUT);
+  solenoidSetup();
   sensorLoop();
 }
 
 void loop() {
+  
+}
+
+void solenoidSetup(){
+  pinMode(MOSFET_GATE_PIN1, OUTPUT);
+  digitalWrite(MOSFET_GATE_PIN1, HIGH);
+  pinMode(MOSFET_GATE_PIN2, OUTPUT);
+  digitalWrite(MOSFET_GATE_PIN2, LOW);
+  delay(3000);
+  digitalWrite(MOSFET_GATE_PIN1, LOW);
 }
 
 
@@ -102,19 +117,17 @@ void sensorLoop(){
 
 
     if(nearZeroCount >= ZEROES_THRESHOLD){
-//      Serial.print("[ ");
-//      for(int i = 0; i < WINDOW_SIZE; i++){
-//        Serial.print(displaceArr[i]);
-//        Serial.print(" ");
-//      }
-//      Serial.print("]");
-//      Serial.print("\n");
       Serial.println("FAILURE DETECTED");
       Serial.println(nearZeroCount);
+      
+      digitalWrite(MOSFET_GATE_PIN2, HIGH);
+      delay(5000);
+      digitalWrite(MOSFET_GATE_PIN2, LOW);
+      delay(2000);
+      digitalWrite(MOSFET_GATE_PIN1, HIGH);
+      delay(5000);
+      digitalWrite(MOSFET_GATE_PIN1, LOW);
       break;
-      // set certain pin to high
-      // print failure detected
-      // break out of this loop 
     }
     prevMeasurement = pwDistance;
     prevDisplacement = displacement;
