@@ -60,7 +60,7 @@
 //  set 'DEBUG_OUTPUT' to 'true' to print debug output, set to 'false' to supress print debug output.
 //
 //  A boolean is used so it can be changed by code.
-bool _DEBUG_OUTPUT = true;
+bool _DEBUG_OUTPUT = false;
 #define DB_PRINT(s) if(_DEBUG_OUTPUT) {Serial.print(s);}
 #define DB_PRINTNB(n,b) if(_DEBUG_OUTPUT) {Serial.print(n,b);}
 #define DB_PRINTLN(s) if(_DEBUG_OUTPUT) {Serial.println(s);}
@@ -83,7 +83,7 @@ bool _DEBUG_OUTPUT = true;
 // MaxSonar to Arduino control/adjustments
 #define MSE_READ_CONTINUOUS HIGH
 //low read idle is trigger, high is continuous
-#define MSE_READ_IDLE HIGH
+#define MSE_READ_IDLE HIGH //LOW
 #define MSE_READ_TRIGGER HIGH
 #define MSE_READ_REQUIRED_DURATION_mS 50
 #define MSE_PW_START_DELAY_MSE_uS 3000

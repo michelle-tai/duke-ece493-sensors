@@ -1,16 +1,19 @@
 //not gonna use serial, use pulse since analog is only in .5s increments? and seems more reliable
 #include <SoftwareSerial.h>
+#include <Wire.h>
 
 //   MaxSonar-EZ pins
 #define MSE_PW_PIN 5 //pw 
 #define MSE_READ_MODE_PIN 4 //rx
-#define MSE_SDATA_PIN 7 //tx but only used for chaining?
+#define MSE_SDATA_PIN 2 //tx but only used for chaining?
 //  GPIO Pins (analog)
 #define MSE_AN_PIN A0 //analog
 
 // mosfet pin
-#define MOSFET_GATE_PIN1 12
-#define MOSFET_GATE_PIN2 11
+#define MOSFET_GATE_PIN1 13 // 1B Top
+#define MOSFET_GATE_PIN2 12 // 1A Bottom
+#define MOSFET_GATE_PIN3 11 // 2B Top
+#define MOSFET_GATE_PIN4 10 // 2A Bottom
 
 // MaxSonar to Arduino control/adjustments
 #define MSE_READ_CONTINUOUS HIGH 
@@ -27,243 +30,182 @@
 #define SOUND_SPEED_uSpIN 73.73
 //#define WINDOW_SIZE 12 //39 //58 //3÷0.250 = 12
 #define ZEROES_THRESHOLD 12 //30 // 46 
-#define LOOP_DELAY 250
+#define LOOP_DELAY 400 //250
+#define DISPLACEMENT_THRESHOLD 0.75
 
 SoftwareSerial mseSerial(MSE_SDATA_PIN, 3, true); // RX,TX,inverse_logic (TX is not used)
 double prevMeasurement;
 double prevDisplacement;
 //double displaceArr[WINDOW_SIZE]; //58 since measurements taken ever 51ms, and around 58 of these in 3 sec
 int nearZeroCount; // threshold set to 46, which is ~80%. we can play with this later
-int winStart;
-int winEnd;
-double winStartVal; 
-double winEndVal;
+double prevMeasurement2;
+double prevDisplacement2;
+//double displaceArr[WINDOW_SIZE]; //58 since measurements taken ever 51ms, and around 58 of these in 3 sec
+int nearZeroCount2; // threshold set to 46, which is ~80%. we can play with this later
+bool isTriggered = false;
+bool isUp = false;
+bool isSensing = false;
 
 void setup() {
   nearZeroCount = 0;
-  winStart = 0;
-  winEnd = 0;
-  // put your setup code here, to run once:
-  Serial.begin(38400); // Open serial communications
-  mseSerial.begin(9600); // Set the rate for MaxSonar communications
-  mseSerial.listen();
-  // Wait for the serial port and allow time for the MaxSonar to initialize (>500mS from power-up)
-  while (!Serial || millis() < 500) {
-    ; // wait...
-  }
+  nearZeroCount2 = 0;
+  serialSetup();
+  pinSetup();
+  solenoidSetup();
+  I2Csetup();
+  Serial.println("done setting up");
+//  sensorLoop();
+  isSensing = true;
+}
+
+void pinSetup(){
+  // LV Maxsonar setup
   pinMode(MSE_PW_PIN, INPUT);
   pinMode(MSE_AN_PIN, INPUT);
   digitalWrite(MSE_READ_MODE_PIN, MSE_READ_IDLE); // Use 'triggered' mode
   pinMode(MSE_READ_MODE_PIN, OUTPUT);
-  solenoidSetup();
-  sensorLoop();
 }
 
 void loop() {
-  
-}
-
-void solenoidSetup(){
-  pinMode(MOSFET_GATE_PIN1, OUTPUT);
-  digitalWrite(MOSFET_GATE_PIN1, HIGH);
-  pinMode(MOSFET_GATE_PIN2, OUTPUT);
-  digitalWrite(MOSFET_GATE_PIN2, LOW);
-  delay(3000);
-  digitalWrite(MOSFET_GATE_PIN1, LOW);
-}
-
-
-void sensorLoop(){
-  while(true){
-    double pwDistance = triggerAndReadDistanceFromPulse();
-    Serial.print("Pulse:\t");
-    Serial.println(pwDistance);
-  
-    if(prevMeasurement == NULL){
-      prevMeasurement = pwDistance;
-      continue;
-    }
-
-    double displacement = pwDistance - prevMeasurement;
-    if(prevDisplacement == NULL){
-      prevDisplacement = displacement;
-      continue;
-    }
-    
-    Serial.print("Displ:\t");
-    Serial.println(displacement);
-//    updateWindow(displacement);
-    Serial.println(abs(prevDisplacement));
-    Serial.println(abs(displacement));
-
-    if(abs(prevDisplacement) < 1){ // if prev was a 0
-      if(abs(displacement) < 1){ //if curr 0, then add to zero count
-        nearZeroCount++;
-      }
-      else{ //else if curr is not 0, then set the near zero count to = 0
-        nearZeroCount = 0;
-      }
-    }
-    else { // if prev was not 0
-      if(abs(displacement) < 1){ // and curr is 0, reset count to 1
-        nearZeroCount = 1;
-      }
-      else{ // curr is not 0 too
-        nearZeroCount = 0;
-      }
-    } 
-    Serial.println(nearZeroCount);
-
-
-
-    if(nearZeroCount >= ZEROES_THRESHOLD){
+  while(isSensing){
+    pulseSonarSensorRead();
+    I2CsensorRead();
+    Serial.println("----");
+    if(nearZeroCount >= ZEROES_THRESHOLD || nearZeroCount2 >= ZEROES_THRESHOLD){
       Serial.println("FAILURE DETECTED");
-      Serial.println(nearZeroCount);
-      
-      digitalWrite(MOSFET_GATE_PIN2, HIGH);
-      delay(5000);
-      digitalWrite(MOSFET_GATE_PIN2, LOW);
-      delay(2000);
-      digitalWrite(MOSFET_GATE_PIN1, HIGH);
-      delay(5000);
+      Serial.print(nearZeroCount);
+      Serial.print(" ");
+      Serial.println(nearZeroCount2);
+
+      Serial.println("Raising arms");
       digitalWrite(MOSFET_GATE_PIN1, LOW);
-      break;
+      digitalWrite(MOSFET_GATE_PIN2, HIGH);
+      digitalWrite(MOSFET_GATE_PIN3, LOW);
+      digitalWrite(MOSFET_GATE_PIN4, HIGH);
+
+      delay(1000);
+      Serial.println("Turning off pins");
+      digitalWrite(MOSFET_GATE_PIN2, LOW);
+      digitalWrite(MOSFET_GATE_PIN4, LOW);
+     
+      isSensing = false;
     }
-    prevMeasurement = pwDistance;
-    prevDisplacement = displacement;
     delay(LOOP_DELAY - MSE_READ_REQUIRED_DURATION_mS);
   }
   
 }
 
-//void zeroCheck(){
-//  double pwDistance = triggerAndReadDistanceFromPulse();
-//  if(prevMeasurement == NULL){
-//    prevMeasurement = pwDistance;
-//    continue;
-//  }
-//  
-//  double displacement = pwDistance - prevMeasurement;
-//  // if see 0 & previous was 0
-//  if(abs(prevMeasurement) < 1){ // if prev was a 0
-//    if(abs(displacement) < 1){ //if curr 0, then add to zero count
-//      nearZeroCount++;
-//    }
-//    else{ //else if curr is not 0, then set the near zero count to = 0
-//      nearZeroCount = 0;
-//    }
-//  }
-//  else { // if prev was not 0
-//    if(abs(displacement) < 1){ // and curr is 0, reset count to 1
-//      nearZeroCount = 1;
-//    }
-//    else{ // curr is not 0 too
-//      nearZeroCount = 0;
-//    }
-//  }
-// 
-//}
+void I2Csetup(){
+  //uses default SCL and SDA pins on the uno
+  Wire.begin();
+  Wire.beginTransmission(112); //112 is the peripheral i2c address
+  Wire.write(byte(81)); // 81 is read
+  Wire.endTransmission(); 
+//  delay(90);
+}
 
-//void updateWindow(double displ){
-//  Serial.print("displace: ");
-//  Serial.println(displ);
-//
-//  // empty window and put in the displ as the first item in window
-//  if(abs(displaceArr[winEnd % WINDOW_SIZE]) < 1.00 && displ > 1.00){
-//    winStart = 0;
-//    winEnd = 0;
-//    displaceArr[winEnd] = displ;
-//    winEnd++;
-//    nearZeroCount = 0;
-//  }
-//  else{
-//    // filling window
-//    if(winEnd < WINDOW_SIZE){
-//      winEnd++;
-//      displaceArr[winEnd] = displ;
-//      //Serial.println("filling window");
-//      if(abs(displ) < 1.00){
-//        nearZeroCount++;
-//        //Serial.print("within threshold # entering unfilled window || count now: ");
-//        //Serial.println(nearZeroCount);
-//      }
-//    } 
-//    // window was already filled
-//    else {
-//      
-//    }
-//  }
-//  
-//
-//  //window already full?
-//  else{
-////    int winStartMod = winStart % WINDOW_SIZE;
-////    double winStartVal = displaceArr[winStartMod];
-////    double oldWinEndVal = displaceArr[winEnd % WINDOW_SIZE];
-//
-//    // replace the whole array when we see a zero to nonzero transition
-//    if(abs(displaceArr[winEnd % WINDOW_SIZE]) < 1.00 && displ > 1.00){
-//      winStart = 0;
-//      winEnd = 0;
-//      displaceArr[winEnd] = displ;
-//      winEnd++;
-//      nearZeroCount = 0;
-//    } 
-//    else {
-//      winStart++;
-//      winEnd++;
-//      
-//      int winEndMod = winEnd % WINDOW_SIZE;
-//      displaceArr[winEndMod] = displ;
-//      if(abs(oldWinEndVal) < 1.00 && displ > 1.00){
-//        winStart = 0;
-//        winEnd = 0;
-//        displaceArr[winEnd] = displ;
-//        winEnd++;
-//        nearZeroCount = 0;
-//      }
-//    }
-////    if(abs(winStartVal) < 1.00 && nearZeroCount > 0){
-////      nearZeroCount--;
-//////      Serial.print("within threshold # (");
-////    }
-//
-////    Serial.print(winStartVal);
-////    Serial.println(") leaving window");
-////    Serial.println(nearZeroCount);
-//    
-////    winStart++;
-////    winEnd++;
-////    
-////    int winEndMod = winEnd % WINDOW_SIZE;
-////    displaceArr[winEndMod] = displ;
-////    if(abs(oldWinEndVal) < 1.00 && displ > 1.00){
-////      winStart = 0;
-////      winEnd = 0;
-////      displaceArr[winEnd] = displ;
-////      winEnd++;
-////      nearZeroCount = 0;
-////    }
-//    else if(abs(displ) < 1.00){
-//      nearZeroCount++;
-//      Serial.print("within threshold # (");
-////      Serial.print(displ);
-////      Serial.print(") entering window || count now: ");
-////      Serial.println(nearZeroCount);
-//    }
-////    if(displ >= -1.00 && displ <= 1.00){
-////      nearZeroCount++;
-//////      Serial.print("within threshold # (");
-//////      Serial.print(displ);
-//////      Serial.print(") entering window || count now: ");
-//////      Serial.println(nearZeroCount);
-////    }
-////    Serial.print(displ);
-////    Serial.println(") entering window");
-//  }
-//  Serial.print("count is now: ");
-//  Serial.println(nearZeroCount);
-//}
+//TODO: add other side too
+void solenoidSetup(){
+  pinMode(MOSFET_GATE_PIN1, OUTPUT);
+  pinMode(MOSFET_GATE_PIN2, OUTPUT);
+  pinMode(MOSFET_GATE_PIN3, OUTPUT);
+  pinMode(MOSFET_GATE_PIN4, OUTPUT);
+  
+  digitalWrite(MOSFET_GATE_PIN1, HIGH);
+  digitalWrite(MOSFET_GATE_PIN2, LOW);
+  digitalWrite(MOSFET_GATE_PIN3, HIGH);
+  digitalWrite(MOSFET_GATE_PIN4, LOW);
+  
+  delay(3000);
+  
+  digitalWrite(MOSFET_GATE_PIN1, LOW);
+  digitalWrite(MOSFET_GATE_PIN3, LOW);
+//  unsigned long startMillis = millis();
+
+}
+
+void I2CsensorRead(){
+  double i2c_range_inch;
+  Wire.beginTransmission(112); //112 is the peripheral i2c address
+  Wire.write(byte(81)); // 81 is read
+  Wire.endTransmission();
+  delay(90);
+  Wire.requestFrom(112, 2);
+  if (2 <= Wire.available()) { // if two bytes were received
+    int reading = Wire.read();  // receive high byte (overwrites previous reading)
+    reading = reading << 8;    // shift high byte to be high 8 bits
+    reading |= Wire.read(); // receive low byte as lower 8 bits
+    i2c_range_inch = reading / 2.54;
+    Serial.print("I2C: ");
+    Serial.println(i2c_range_inch);
+  } 
+  else {
+    Serial.println("I2C ERROR");
+    return;
+  }
+  
+  if(prevMeasurement2 == NULL){
+    prevMeasurement2 = i2c_range_inch;
+    return;
+  }
+
+  double displacement2 = i2c_range_inch - prevMeasurement2;
+  int newZeroCount2 = calcNearZeroCount(prevDisplacement2, displacement2, nearZeroCount2);
+  nearZeroCount2 = newZeroCount2; 
+  Serial.print("Displ for I2c: ");
+  Serial.println(displacement2);
+//  Serial.print("nearZeroCount2: ");
+  Serial.println(nearZeroCount2);
+  prevMeasurement2 = i2c_range_inch;
+  prevDisplacement2 = displacement2;
+}
+
+int calcNearZeroCount(double previousDisplacement, double currDisplacement, int nearZeroCount){
+   if(abs(previousDisplacement) < DISPLACEMENT_THRESHOLD){ // if prev was a 0
+    if(abs(currDisplacement) < DISPLACEMENT_THRESHOLD){ //if curr 0, then add to zero count
+      return nearZeroCount + 1;
+    }
+    else{ //else if curr is not 0, then set the near zero count to = 0
+      return 0;
+    }
+  }
+  else { // if prev was not 0
+    if(abs(currDisplacement) < DISPLACEMENT_THRESHOLD){ // and curr is 0, reset count to 1
+      return 1;
+    }
+    else{ // curr is not 0 too
+      return 0;
+    }
+  } 
+}
+
+void pulseSonarSensorRead(){
+  double pwDistance = triggerAndReadDistanceFromPulse();
+  Serial.print("Pulse:\t");
+  Serial.println(pwDistance);
+
+  if(prevMeasurement == NULL){
+    prevMeasurement = pwDistance;
+    return;
+  }
+
+  double displacement = pwDistance - prevMeasurement;
+  if(prevDisplacement == NULL){
+    prevDisplacement = displacement;
+    return;
+  }
+  
+  Serial.print("Displ for pulse: ");
+  Serial.println(displacement);
+//  Serial.println(abs(prevDisplacement));
+//  Serial.println(abs(displacement));
+  
+  int newZeroCount = calcNearZeroCount(prevDisplacement, displacement, nearZeroCount);
+  nearZeroCount = newZeroCount; 
+  Serial.println(nearZeroCount);
+  prevMeasurement = pwDistance;
+  prevDisplacement = displacement;
+}
 
 /**
  * To assure that the distance pulse is detected going from low to high,
@@ -305,4 +247,15 @@ double triggerAndReadDistanceFromPulse() {
     delay(1);
   } 
   return distance;
+}
+
+void serialSetup(){
+  // put your setup code here, to run once:
+  Serial.begin(38400); // Open serial communications
+  mseSerial.begin(9600); // Set the rate for MaxSonar communications
+  mseSerial.listen();
+  // Wait for the serial port and allow time for the MaxSonar to initialize (>500mS from power-up)
+  while (!Serial || millis() < 500) {
+    ; // wait...
+  }
 }
