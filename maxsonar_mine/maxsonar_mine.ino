@@ -10,10 +10,12 @@
 #define MSE_AN_PIN A0 //analog
 
 // mosfet pin
-#define MOSFET_GATE_PIN1 13 // 1B Top
-#define MOSFET_GATE_PIN2 12 // 1A Bottom
-#define MOSFET_GATE_PIN3 11 // 2B Top
-#define MOSFET_GATE_PIN4 10 // 2A Bottom
+#define MOSFET_GATE_PIN1 12 // 1B Top
+#define MOSFET_GATE_PIN2 11 // 1A Bottom
+#define MOSFET_GATE_PIN3 10 // 2B Top
+#define MOSFET_GATE_PIN4 9 // 2A Bottom
+
+#define BUTTON_PIN 7 // will be pullup, so usually high
 
 // MaxSonar to Arduino control/adjustments
 #define MSE_READ_CONTINUOUS HIGH 
@@ -29,8 +31,8 @@
 //  0.0000290275 S/cm = 29.0275762 uS/cm = 73.73 uS/in
 #define SOUND_SPEED_uSpIN 73.73
 //#define WINDOW_SIZE 12 //39 //58 //3÷0.250 = 12
-#define ZEROES_THRESHOLD 12 //30 // 46 
-#define LOOP_DELAY 400 //250
+#define ZEROES_THRESHOLD 5 //30 // 46 
+#define LOOP_DELAY 250
 #define DISPLACEMENT_THRESHOLD 0.75
 
 SoftwareSerial mseSerial(MSE_SDATA_PIN, 3, true); // RX,TX,inverse_logic (TX is not used)
@@ -42,9 +44,13 @@ double prevMeasurement2;
 double prevDisplacement2;
 //double displaceArr[WINDOW_SIZE]; //58 since measurements taken ever 51ms, and around 58 of these in 3 sec
 int nearZeroCount2; // threshold set to 46, which is ~80%. we can play with this later
-bool isTriggered = false;
 bool isUp = false;
 bool isSensing = false;
+bool justStarting = true;
+int lastState = HIGH;
+int currentState;
+bool hasDoneFirstDistMeas = false;
+bool hasDoneFirstDisplCalc = false;
 
 void setup() {
   nearZeroCount = 0;
@@ -55,7 +61,7 @@ void setup() {
   I2Csetup();
   Serial.println("done setting up");
 //  sensorLoop();
-  isSensing = true;
+  isSensing = false;
 }
 
 void pinSetup(){
@@ -64,12 +70,48 @@ void pinSetup(){
   pinMode(MSE_AN_PIN, INPUT);
   digitalWrite(MSE_READ_MODE_PIN, MSE_READ_IDLE); // Use 'triggered' mode
   pinMode(MSE_READ_MODE_PIN, OUTPUT);
+
+  pinMode(7, INPUT_PULLUP);
+}
+
+void reset(){
+  hasDoneFirstDistMeas = false;
+  hasDoneFirstDisplCalc = false;
+  nearZeroCount = 0;
+  isUp = false;
 }
 
 void loop() {
+  currentState = digitalRead(7);
+  Serial.print("state: ");
+  Serial.println(currentState);
+  if(lastState == HIGH && currentState == LOW){
+    if(isUp){
+      Serial.println("bringing arms down");
+      isUp = false;
+      isSensing = false;
+      bringArmsDown();
+    } 
+    else{ // arms are down, so could be sensing or just not
+      if(!isSensing){
+        Serial.println("starting sensing in 1 second");
+        isSensing = true;
+        reset();
+        delay(1000);
+      } else {
+        Serial.println("reset");
+        reset(); // reset
+        
+        bringArmsDown();
+      }
+    }
+  } 
+  lastState = currentState;
+  delay(50);
+  
   while(isSensing){
     pulseSonarSensorRead();
-    I2CsensorRead();
+//    I2CsensorRead();
     Serial.println("----");
     if(nearZeroCount >= ZEROES_THRESHOLD || nearZeroCount2 >= ZEROES_THRESHOLD){
       Serial.println("FAILURE DETECTED");
@@ -82,6 +124,7 @@ void loop() {
       digitalWrite(MOSFET_GATE_PIN2, HIGH);
       digitalWrite(MOSFET_GATE_PIN3, LOW);
       digitalWrite(MOSFET_GATE_PIN4, HIGH);
+      isUp = true;
 
       delay(1000);
       Serial.println("Turning off pins");
@@ -121,43 +164,18 @@ void solenoidSetup(){
   digitalWrite(MOSFET_GATE_PIN1, LOW);
   digitalWrite(MOSFET_GATE_PIN3, LOW);
 //  unsigned long startMillis = millis();
-
 }
 
-void I2CsensorRead(){
-  double i2c_range_inch;
-  Wire.beginTransmission(112); //112 is the peripheral i2c address
-  Wire.write(byte(81)); // 81 is read
-  Wire.endTransmission();
-  delay(90);
-  Wire.requestFrom(112, 2);
-  if (2 <= Wire.available()) { // if two bytes were received
-    int reading = Wire.read();  // receive high byte (overwrites previous reading)
-    reading = reading << 8;    // shift high byte to be high 8 bits
-    reading |= Wire.read(); // receive low byte as lower 8 bits
-    i2c_range_inch = reading / 2.54;
-    Serial.print("I2C: ");
-    Serial.println(i2c_range_inch);
-  } 
-  else {
-    Serial.println("I2C ERROR");
-    return;
-  }
+void bringArmsDown(){
+  digitalWrite(MOSFET_GATE_PIN1, HIGH);
+  digitalWrite(MOSFET_GATE_PIN2, LOW);
+  digitalWrite(MOSFET_GATE_PIN3, HIGH);
+  digitalWrite(MOSFET_GATE_PIN4, LOW);
   
-  if(prevMeasurement2 == NULL){
-    prevMeasurement2 = i2c_range_inch;
-    return;
-  }
-
-  double displacement2 = i2c_range_inch - prevMeasurement2;
-  int newZeroCount2 = calcNearZeroCount(prevDisplacement2, displacement2, nearZeroCount2);
-  nearZeroCount2 = newZeroCount2; 
-  Serial.print("Displ for I2c: ");
-  Serial.println(displacement2);
-//  Serial.print("nearZeroCount2: ");
-  Serial.println(nearZeroCount2);
-  prevMeasurement2 = i2c_range_inch;
-  prevDisplacement2 = displacement2;
+  delay(1000);
+  
+  digitalWrite(MOSFET_GATE_PIN1, LOW);
+  digitalWrite(MOSFET_GATE_PIN3, LOW);
 }
 
 int calcNearZeroCount(double previousDisplacement, double currDisplacement, int nearZeroCount){
@@ -183,15 +201,18 @@ void pulseSonarSensorRead(){
   double pwDistance = triggerAndReadDistanceFromPulse();
   Serial.print("Pulse:\t");
   Serial.println(pwDistance);
-
-  if(prevMeasurement == NULL){
+  if(!hasDoneFirstDistMeas){
     prevMeasurement = pwDistance;
+    hasDoneFirstDistMeas = true;
     return;
   }
 
   double displacement = pwDistance - prevMeasurement;
-  if(prevDisplacement == NULL){
+  Serial.println(prevDisplacement);
+  if(!hasDoneFirstDisplCalc){
     prevDisplacement = displacement;
+    hasDoneFirstDisplCalc = true;
+    Serial.println("is returning");
     return;
   }
   
@@ -199,12 +220,18 @@ void pulseSonarSensorRead(){
   Serial.println(displacement);
 //  Serial.println(abs(prevDisplacement));
 //  Serial.println(abs(displacement));
-  
+
+  int startMillis = millis();
+//  int newZeroCount;
+//  if(millis() - startMillis <= 25){
+//    newZeroCount = calcNearZeroCount(prevDisplacement, displacement, nearZeroCount);
+//  }
   int newZeroCount = calcNearZeroCount(prevDisplacement, displacement, nearZeroCount);
   nearZeroCount = newZeroCount; 
   Serial.println(nearZeroCount);
   prevMeasurement = pwDistance;
   prevDisplacement = displacement;
+  delay(5);
 }
 
 /**
@@ -258,4 +285,40 @@ void serialSetup(){
   while (!Serial || millis() < 500) {
     ; // wait...
   }
+}
+
+void I2CsensorRead(){
+  double i2c_range_inch;
+  Wire.beginTransmission(112); //112 is the peripheral i2c address
+  Wire.write(byte(81)); // 81 is read
+  Wire.endTransmission();
+  delay(90);
+  Wire.requestFrom(112, 2);
+  if (2 <= Wire.available()) { // if two bytes were received
+    int reading = Wire.read();  // receive high byte (overwrites previous reading)
+    reading = reading << 8;    // shift high byte to be high 8 bits
+    reading |= Wire.read(); // receive low byte as lower 8 bits
+    i2c_range_inch = reading / 2.54;
+    Serial.print("I2C: ");
+    Serial.println(i2c_range_inch);
+  } 
+  else {
+    Serial.println("I2C ERROR");
+    return;
+  }
+  
+  if(prevMeasurement2 == NULL){
+    prevMeasurement2 = i2c_range_inch;
+    return;
+  }
+
+  double displacement2 = i2c_range_inch - prevMeasurement2;
+  int newZeroCount2 = calcNearZeroCount(prevDisplacement2, displacement2, nearZeroCount2);
+  nearZeroCount2 = newZeroCount2; 
+  Serial.print("Displ for I2c: ");
+  Serial.println(displacement2);
+//  Serial.print("nearZeroCount2: ");
+  Serial.println(nearZeroCount2);
+  prevMeasurement2 = i2c_range_inch;
+  prevDisplacement2 = displacement2;
 }
